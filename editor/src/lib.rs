@@ -41,6 +41,7 @@ pub mod export;
 pub mod highlight;
 pub mod interaction;
 pub mod light;
+pub mod log_child_os_window;
 pub mod menu;
 pub mod mesh;
 pub mod message;
@@ -138,6 +139,7 @@ use crate::{
         terrain::TerrainInteractionMode,
     },
     light::LightPanel,
+    log_child_os_window::LogChildOsWindow,
     menu::{Menu, MenuContext, Panels},
     mesh::{MeshControlPanel, SurfaceDataViewer},
     message::MessageSender,
@@ -175,7 +177,13 @@ use crate::{
     utils::doc::DocWindow,
     world::{graph::EditorSceneWrapper, menu::SceneNodeContextMenu, WorldViewer},
 };
-use fyrox::event_loop::ActiveEventLoop;
+use fyrox::{
+    core::log::{self, LogMessage},
+    dpi::Size,
+    engine::{GraphicsContext, InitializedGraphicsContext},
+    event_loop::ActiveEventLoop,
+    window::WindowId,
+};
 use fyrox_build_tools::{build::BuildWindow, CommandDescriptor};
 pub use message::Message;
 use plugins::inspector::InspectorPlugin;
@@ -183,12 +191,13 @@ use std::{
     cell::RefCell,
     collections::VecDeque,
     io::{BufRead, BufReader, Cursor, Read},
+    ops::DerefMut,
     path::{Path, PathBuf},
     process::Stdio,
     rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, channel, Receiver},
+        mpsc::{self, channel, Receiver, Sender},
         Arc, LazyLock,
     },
     time::{Duration, Instant},
@@ -343,6 +352,18 @@ pub enum Mode {
     Play {
         process: std::process::Child,
         active: Arc<AtomicBool>,
+        /// Listeners that should have been listening to log messages when in edit or build mode,
+        ///
+        /// for example, the LogPanel.
+        ///
+        /// These listeners are suppressed in play mode and are restored when exiting play mode.
+        suppressed_listeners: Vec<Sender<LogMessage>>,
+        /// This object has the same level of abstraction as the [`Editor`], with an [`Engine`] in its fields.
+        ///
+        /// This object is marked as Rc<RefCell<_>> because it needs to be taken out from this [`Mode`] enum in the event loop.
+        ///
+        /// If the object is None, it means that the log window is closed.
+        log_child_os_window: Rc<RefCell<Option<LogChildOsWindow>>>,
     },
 }
 
@@ -661,7 +682,12 @@ pub struct Editor {
     pub surface_data_viewer: Option<SurfaceDataViewer>,
     pub processed_ui_messages: usize,
     pub styles: FxHashMap<EditorStyle, StyleResource>,
-    pub running_game_process: Option<(std::process::Child, Arc<AtomicBool>)>,
+    pub running_game_process: Option<(
+        std::process::Child,
+        Arc<AtomicBool>,
+        Vec<Sender<LogMessage>>,
+        Rc<RefCell<Option<LogChildOsWindow>>>,
+    )>,
     pub user_project_icon: Option<Vec<u8>>,
     pub user_project_name: String,
     pub user_project_version: String,
@@ -1450,8 +1476,15 @@ impl Editor {
                 self.message_sender.send(Message::SwitchToEditMode)
             });
             if self.build_window.is_none() {
-                if let Some((process, active)) = self.running_game_process.take() {
-                    self.mode = Mode::Play { process, active };
+                if let Some((process, active, suppressed_listeners, log_child_os_window)) =
+                    self.running_game_process.take()
+                {
+                    self.mode = Mode::Play {
+                        process,
+                        active,
+                        suppressed_listeners,
+                        log_child_os_window,
+                    };
                 }
             }
         }
@@ -1677,16 +1710,57 @@ impl Editor {
 
         match command.spawn() {
             Ok(mut process) => {
+                // Suppress all log listeners that were active in edit mode.
+                let suppressed_listeners = Log::take_all_listeners();
+
+                let (log_message_sender, log_message_receiver) = mpsc::channel();
+                // create a child os window to print logs
+                let log_child_os_window = Rc::new(RefCell::new(Some(LogChildOsWindow::new(
+                    log_message_receiver,
+                ))));
+                // subscribe the log window to Log.
+                Log::add_listener(log_message_sender);
+
                 let active = Arc::new(AtomicBool::new(true));
 
                 // Capture output from child process.
                 let mut stdout = process.stdout.take().unwrap();
                 let mut stderr = process.stderr.take().unwrap();
                 let reader_active = active.clone();
+                // let log_kind_strs = [
+                //     MessageKind::Information.as_str(),
+                //     MessageKind::Warning.as_str(),
+                //     MessageKind::Error.as_str(),];
+                let message_kind_info_str = MessageKind::Information.as_str();
+                let message_kind_warning_str = MessageKind::Warning.as_str();
+                let message_kind_error_str = MessageKind::Error.as_str();
                 std::thread::spawn(move || {
                     while reader_active.load(Ordering::SeqCst) {
                         for line in BufReader::new(&mut stdout).lines().take(10).flatten() {
-                            Log::info(line);
+                            // map the messages received from standard io to its respective severity
+                            let (mut line, message_kind) = if line.contains(message_kind_info_str) {
+                                (
+                                    line.replace(message_kind_info_str, ""),
+                                    MessageKind::Information,
+                                )
+                            } else if line.contains(message_kind_warning_str) {
+                                (
+                                    line.replace(message_kind_warning_str, ""),
+                                    MessageKind::Warning,
+                                )
+                            } else if line.contains(message_kind_error_str) {
+                                (line.replace(message_kind_error_str, ""), MessageKind::Error)
+                            } else {
+                                (line, MessageKind::Information)
+                            };
+                            // Indicates the log is coming from the game without modifying the existing message structure.
+                            // This will be peeled off in the LogChildOsWindow.
+                            line.insert_str(0, "[__GAME__]");
+                            match message_kind {
+                                MessageKind::Information => Log::info(line),
+                                MessageKind::Warning => Log::warn(line),
+                                MessageKind::Error => Log::err(line),
+                            }
                         }
                     }
                 });
@@ -1699,7 +1773,12 @@ impl Editor {
                     }
                 });
 
-                self.mode = Mode::Play { active, process };
+                self.mode = Mode::Play {
+                    active,
+                    process,
+                    suppressed_listeners,
+                    log_child_os_window,
+                };
 
                 self.on_mode_changed();
             }
@@ -1750,8 +1829,14 @@ impl Editor {
             Mode::Build { .. } => {
                 unreachable!();
             }
-            Mode::Play { process, active } => {
-                self.running_game_process = Some((process, active));
+            Mode::Play {
+                process,
+                active,
+                suppressed_listeners,
+                log_child_os_window,
+            } => {
+                self.running_game_process =
+                    Some((process, active, suppressed_listeners, log_child_os_window));
             }
         }
 
@@ -2375,10 +2460,15 @@ impl Editor {
             Mode::Play {
                 ref mut process,
                 ref active,
+                ref mut suppressed_listeners,
+                log_child_os_window: _,
             } => {
                 match process.try_wait() {
                     Ok(status) => {
                         if let Some(status) = status {
+                            // return the suppressed listeners back to log
+                            // the log window listener will be removed automatically in the next Log call because it's invalidated.
+                            Log::add_listeners(std::mem::take(suppressed_listeners));
                             // Stop reader thread.
                             active.store(false, Ordering::SeqCst);
 
@@ -2452,10 +2542,19 @@ impl Editor {
                                         if let Some(build_window) = self.build_window.take() {
                                             build_window.destroy(ui);
                                         }
-                                        if let Some((process, active)) =
-                                            self.running_game_process.take()
+                                        if let Some((
+                                            process,
+                                            active,
+                                            suppressed_listeners,
+                                            log_child_os_window,
+                                        )) = self.running_game_process.take()
                                         {
-                                            self.mode = Mode::Play { process, active };
+                                            self.mode = Mode::Play {
+                                                process,
+                                                active,
+                                                suppressed_listeners,
+                                                log_child_os_window,
+                                            };
                                             self.on_mode_changed();
                                         } else {
                                             self.mode = Mode::Edit;
@@ -2966,147 +3065,245 @@ impl Editor {
 
     pub fn run(mut self, event_loop: EventLoop<()>) {
         for_each_plugin!(self.plugins => on_start(&mut self));
-
         event_loop
-            .run(move |event, window_target| match event {
-                Event::AboutToWait => {
-                    if self.is_active() {
-                        update(&mut self, window_target);
-                    }
+            .run(move |event, window_target| {
+                // grab the window id for conditional handling because we have main window and log window (in play mode)
+                let main_window_id: Option<WindowId> = match &self.engine.graphics_context {
+                    GraphicsContext::Initialized(context) => Some(context.window.id()),
+                    _ => None,
+                };
+                // optionally copies the log window Rc pointer
+                let log_child_os_window = match &self.mode {
+                    Mode::Play {
+                        log_child_os_window,
+                        ..
+                    } => Some(log_child_os_window.clone()),
+                    _ => None,
+                };
+                // keep the RefMut object, otherwise the borrow checker will complain
+                let mut log_child_os_window_refmut = log_child_os_window
+                    .as_ref()
+                    .and_then(|w| Some(w.borrow_mut()));
+                // convert RefMut to &mut
+                let mut log_child_os_window =
+                    log_child_os_window_refmut.as_mut().and_then(|w| w.as_mut());
 
-                    if self.exit {
-                        window_target.exit();
+                // optionally grab the window id of the log window
+                let log_window_id: Option<WindowId> = log_child_os_window
+                    .as_ref() // this is necessary because otherwise the Option will be consumed
+                    .and_then(|log_child_os_window| {
+                        match &log_child_os_window.engine.graphics_context {
+                            GraphicsContext::Initialized(context) => Some(context.window.id()),
+                            _ => None,
+                        }
+                    });
 
-                        // Kill any active child process on exit.
-                        match self.mode {
-                            Mode::Edit => {}
-                            Mode::Build {
-                                ref mut process, ..
-                            } => {
-                                if let Some(process) = process {
+                match event {
+                    Event::AboutToWait => {
+                        // update the main editor window
+                        if self.is_active() {
+                            update(&mut self, window_target);
+                        }
+                        // update the log window if it exists
+                        if let Some(log_child_os_window) = log_child_os_window.as_mut() {
+                            log_child_os_window.update(&window_target);
+                        }
+                        // handle main window exit
+                        if self.exit {
+                            window_target.exit();
+
+                            // Kill any active child process on exit.
+                            match self.mode {
+                                Mode::Edit => {}
+                                Mode::Build {
+                                    ref mut process, ..
+                                } => {
+                                    if let Some(process) = process {
+                                        let _ = process.kill();
+                                    }
+                                }
+                                Mode::Play {
+                                    ref mut process, ..
+                                } => {
                                     let _ = process.kill();
                                 }
                             }
-                            Mode::Play {
-                                ref mut process, ..
-                            } => {
-                                let _ = process.kill();
-                            }
                         }
                     }
-                }
-                Event::Resumed => {
-                    self.on_resumed(window_target);
-                }
-                Event::Suspended => {
-                    self.on_suspended();
-                }
-                Event::WindowEvent { ref event, .. } => {
-                    match event {
-                        WindowEvent::CloseRequested => {
-                            self.message_sender.send(Message::Exit { force: false });
-                        }
-                        WindowEvent::Resized(size) => {
-                            if let Err(e) = self.engine.set_frame_size((*size).into()) {
-                                fyrox::core::log::Log::writeln(
-                                    MessageKind::Error,
-                                    format!("Failed to set renderer size! Reason: {e:?}"),
-                                );
-                            }
-
-                            let window = &self.engine.graphics_context.as_initialized_ref().window;
-
-                            let logical_size = size.to_logical(window.scale_factor());
-                            self.engine.user_interfaces.first_mut().send_message(
-                                WidgetMessage::width(
-                                    self.root_grid,
-                                    MessageDirection::ToWidget,
-                                    logical_size.width,
-                                ),
-                            );
-                            self.engine.user_interfaces.first_mut().send_message(
-                                WidgetMessage::height(
-                                    self.root_grid,
-                                    MessageDirection::ToWidget,
-                                    logical_size.height,
-                                ),
-                            );
-
-                            if size.width > 0 && size.height > 0 {
-                                self.settings.windows.window_size.x = size.width as f32;
-                                self.settings.windows.window_size.y = size.height as f32;
-                            }
-
-                            self.settings.windows.window_maximized = window.is_maximized();
-                        }
-                        WindowEvent::Focused(focused) => {
-                            self.focused = *focused;
-                        }
-                        WindowEvent::Moved(new_position) => {
-                            // Allow the window to go outside the screen bounds by a little. This
-                            // happens when the window is maximized.
-                            if new_position.x > -50 && new_position.y > -50 {
-                                self.settings.windows.window_position.x = new_position.x as f32;
-                                self.settings.windows.window_position.y = new_position.y as f32;
-                            }
-                        }
-                        WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                            set_ui_scaling(
-                                self.engine.user_interfaces.first(),
-                                *scale_factor as f32,
-                            );
-                        }
-                        WindowEvent::RedrawRequested => {
-                            if self.is_active() {
-                                if let Some(entry) = self.scenes.current_scene_entry_mut() {
-                                    entry
-                                        .controller
-                                        .on_before_render(&entry.selection, &mut self.engine);
-                                }
-
-                                self.engine.render().unwrap();
-
-                                if let Some(scene) = self.scenes.current_scene_controller_mut() {
-                                    scene.on_after_render(&mut self.engine);
+                    Event::Resumed => {
+                        self.on_resumed(window_target);
+                        // call on_resumed on log window if it exists
+                        log_child_os_window
+                            .as_mut()
+                            .map(|w| w.on_resumed(window_target));
+                    }
+                    Event::Suspended => {
+                        self.on_suspended();
+                        // call on_suspended on log window if it exists
+                        log_child_os_window.as_mut().map(|w| w.on_suspended());
+                    }
+                    Event::WindowEvent {
+                        ref event,
+                        window_id, // window id is necessary for conditional handling
+                    } => {
+                        match event {
+                            WindowEvent::CloseRequested => {
+                                if main_window_id == Some(window_id) {
+                                    self.message_sender.send(Message::Exit { force: false });
+                                } else if log_window_id == Some(window_id) {
+                                    // this will drop the log window from Mode::Play struct. It will automatically close the window.
+                                    log_child_os_window_refmut
+                                        .expect("It is Some because log_child_os_window is Some")
+                                        .take();
                                 }
                             }
+                            WindowEvent::Resized(size) => {
+                                // we have two windows to handle resize, so we extract the common logic to a function
+                                fn resize_for_engine(
+                                    engine: &mut Engine,
+                                    size: &PhysicalSize<u32>,
+                                    root_node: Handle<UiNode>,
+                                    settings: Option<&mut Settings>,
+                                ) {
+                                    if let Err(e) = engine.set_frame_size((*size).into()) {
+                                        fyrox::core::log::Log::writeln(
+                                            MessageKind::Error,
+                                            format!("Failed to set renderer size! Reason: {e:?}"),
+                                        );
+                                    }
+
+                                    let window =
+                                        &engine.graphics_context.as_initialized_ref().window;
+                                    let logical_size = size.to_logical(window.scale_factor());
+                                    engine.user_interfaces.first_mut().send_message(
+                                        WidgetMessage::width(
+                                            root_node,
+                                            MessageDirection::ToWidget,
+                                            logical_size.width,
+                                        ),
+                                    );
+                                    engine.user_interfaces.first_mut().send_message(
+                                        WidgetMessage::height(
+                                            root_node,
+                                            MessageDirection::ToWidget,
+                                            logical_size.height,
+                                        ),
+                                    );
+                                    // This is not extracted out of the function because it depends on the window variable created inside this function.
+                                    if let Some(settings) = settings {
+                                        settings.windows.window_maximized = window.is_maximized();
+                                        if size.width > 0 && size.height > 0 {
+                                            settings.windows.window_size.x = size.width as f32;
+                                            settings.windows.window_size.y = size.height as f32;
+                                        }
+                                    }
+                                }
+                                if main_window_id == Some(window_id) {
+                                    resize_for_engine(
+                                        &mut self.engine,
+                                        size,
+                                        self.root_grid,
+                                        Some(&mut self.settings),
+                                    );
+                                }
+                                if log_window_id == Some(window_id) {
+                                    if let Some(log_child_os_window) = log_child_os_window.as_mut()
+                                    {
+                                        resize_for_engine(
+                                            &mut log_child_os_window.engine,
+                                            size,
+                                            log_child_os_window.root_grid,
+                                            None,
+                                        );
+                                    }
+                                }
+                            }
+                            WindowEvent::Focused(focused) => {
+                                if main_window_id == Some(window_id) {
+                                    self.focused = *focused;
+                                }
+                            }
+                            WindowEvent::Moved(new_position) => {
+                                // Allow the window to go outside the screen bounds by a little. This
+                                // happens when the window is maximized.
+                                if main_window_id == Some(window_id) {
+                                    if new_position.x > -50 && new_position.y > -50 {
+                                        self.settings.windows.window_position.x =
+                                            new_position.x as f32;
+                                        self.settings.windows.window_position.y =
+                                            new_position.y as f32;
+                                    }
+                                }
+                            }
+                            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                                if main_window_id == Some(window_id) {
+                                    set_ui_scaling(
+                                        self.engine.user_interfaces.first(),
+                                        *scale_factor as f32,
+                                    );
+                                }
+                            }
+                            WindowEvent::RedrawRequested => {
+                                // render main window if it is ready
+                                if main_window_id == Some(window_id) && self.is_active() {
+                                    if let Some(entry) = self.scenes.current_scene_entry_mut() {
+                                        entry
+                                            .controller
+                                            .on_before_render(&entry.selection, &mut self.engine);
+                                    }
+
+                                    self.engine.render().unwrap();
+
+                                    if let Some(scene) = self.scenes.current_scene_controller_mut()
+                                    {
+                                        scene.on_after_render(&mut self.engine);
+                                    }
+                                }
+                                // render log window if it is ready
+                                if log_window_id == Some(window_id) {
+                                    if let Some(log_child_os_window) = log_child_os_window.as_mut()
+                                    {
+                                        log_child_os_window.engine.render().unwrap();
+                                    }
+                                }
+                            }
+                            _ => (),
                         }
-                        _ => (),
-                    }
 
-                    // Any action in the window, other than a redraw request forces the editor to
-                    // do another update pass which then pushes a redraw request to the event
-                    // queue. This check prevents infinite loop of this kind.
-                    if !matches!(event, WindowEvent::RedrawRequested) {
-                        self.update_loop_state.request_update_in_current_frame();
-                    }
-
-                    if let Some(os_event) = translate_event(event) {
-                        self.engine
-                            .user_interfaces
-                            .first_mut()
-                            .process_os_event(&os_event);
-                    }
-                }
-                Event::LoopExiting => {
-                    let ids = self.scenes.entries.iter().map(|e| e.id).collect::<Vec<_>>();
-                    for id in ids {
-                        self.close_scene(id);
-                    }
-
-                    self.settings.force_save();
-
-                    for_each_plugin!(self.plugins => on_exit(&mut self));
-                }
-                _ => {
-                    if self.is_active() {
-                        if self.is_suspended {
-                            for_each_plugin!(self.plugins => on_resumed(&mut self));
-                            self.is_suspended = false;
+                        // Any action in the window, other than a redraw request forces the editor to
+                        // do another update pass which then pushes a redraw request to the event
+                        // queue. This check prevents infinite loop of this kind.
+                        if !matches!(event, WindowEvent::RedrawRequested) {
+                            self.update_loop_state.request_update_in_current_frame();
                         }
-                    } else if !self.is_suspended {
-                        for_each_plugin!(self.plugins => on_suspended(&mut self));
-                        self.is_suspended = true;
+
+                        if let Some(os_event) = translate_event(event) {
+                            self.engine
+                                .user_interfaces
+                                .first_mut()
+                                .process_os_event(&os_event);
+                        }
+                    }
+                    Event::LoopExiting => {
+                        let ids = self.scenes.entries.iter().map(|e| e.id).collect::<Vec<_>>();
+                        for id in ids {
+                            self.close_scene(id);
+                        }
+
+                        self.settings.force_save();
+
+                        for_each_plugin!(self.plugins => on_exit(&mut self));
+                    }
+                    _ => {
+                        if self.is_active() {
+                            if self.is_suspended {
+                                for_each_plugin!(self.plugins => on_resumed(&mut self));
+                                self.is_suspended = false;
+                            }
+                        } else if !self.is_suspended {
+                            for_each_plugin!(self.plugins => on_suspended(&mut self));
+                            self.is_suspended = true;
+                        }
                     }
                 }
             })

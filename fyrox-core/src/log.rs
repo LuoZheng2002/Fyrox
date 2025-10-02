@@ -81,7 +81,7 @@ pub enum MessageKind {
 }
 
 impl MessageKind {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             MessageKind::Information => "[INFO]: ",
             MessageKind::Warning => "[WARNING]: ",
@@ -284,6 +284,19 @@ impl Log {
     /// Adds a listener that will receive a copy of every message passed into the log.
     pub fn add_listener(listener: Sender<LogMessage>) {
         LOG.lock().listeners.push(listener)
+    }
+
+    /// Adds multiple listeners that will receive a copy of every message passed into the log.
+    pub fn add_listeners(listeners: Vec<Sender<LogMessage>>) {
+        let mut guard = LOG.lock();
+        for listener in listeners {
+            guard.listeners.push(listener);
+        }
+    }
+
+    /// Remove and return all listeners.
+    pub fn take_all_listeners() -> Vec<Sender<LogMessage>> {
+        std::mem::take(&mut LOG.lock().listeners)
     }
 
     /// Allows you to verify that the result of the operation is Ok, or print the error in the log.
