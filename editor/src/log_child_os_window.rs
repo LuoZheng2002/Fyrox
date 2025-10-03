@@ -294,6 +294,9 @@ impl LogChildOsWindow {
 
     /// Returns `false` if this window should close.
     pub fn update(&mut self, event_loop: &ActiveEventLoop) {
+        if let GraphicsContext::Initialized(ctx) = &self.engine.graphics_context {
+            ctx.make_context_current().unwrap();
+        }
         let elapsed = self.game_loop_data.clock.elapsed().as_secs_f32();
         self.game_loop_data.clock = Instant::now();
         self.game_loop_data.lag += elapsed;
@@ -340,13 +343,20 @@ impl LogChildOsWindow {
                 _ => {}
             }
         }
+        if let GraphicsContext::Initialized(ctx) = &self.engine.graphics_context {
+            ctx.make_context_not_current().unwrap();
+        }
     }
     /// Calls initialize_graphics_context on the engine.
     pub fn on_resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.engine
             .initialize_graphics_context(event_loop)
             .expect("Unable to initialize graphics context!");
-        self.engine.graphics_context.as_initialized_ref().make_context_not_current().unwrap();
+        self.engine
+            .graphics_context
+            .as_initialized_ref()
+            .make_context_not_current()
+            .unwrap();
     }
 
     pub fn on_suspended(&mut self) {
