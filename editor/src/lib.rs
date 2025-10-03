@@ -3010,6 +3010,7 @@ impl Editor {
 
         engine.initialize_graphics_context(event_loop).unwrap();
 
+
         let graphics_context = engine.graphics_context.as_initialized_mut();
 
         graphics_context.set_window_icon_from_memory(
@@ -3053,7 +3054,8 @@ impl Editor {
                 Log::info("Graphics settings were applied successfully!");
             }
             Err(e) => Log::err(format!("Failed to apply graphics settings! Reason: {e:?}")),
-        }
+        };
+        graphics_context.make_context_not_current().unwrap();
     }
 
     fn on_suspended(&mut self) {
@@ -3266,8 +3268,17 @@ impl Editor {
                                             .on_before_render(&entry.selection, &mut self.engine);
                                     }
                                     println!("Rendering editor window");
+                                    if let GraphicsContext::Initialized(ctx) =
+                                        &mut self.engine.graphics_context
+                                    {
+                                        ctx.make_context_current().unwrap();
+                                    }
                                     self.engine.render().unwrap();
-
+                                    if let GraphicsContext::Initialized(ctx) =
+                                        &mut self.engine.graphics_context
+                                    {
+                                        ctx.make_context_not_current().unwrap();
+                                    }
                                     if let Some(scene) = self.scenes.current_scene_controller_mut()
                                     {
                                         scene.on_after_render(&mut self.engine);
@@ -3277,7 +3288,17 @@ impl Editor {
                                 if log_window_id == Some(window_id) {
                                     if let Some(log_child_os_window) = log_child_os_window.as_mut()
                                     {
+                                        if let GraphicsContext::Initialized(ctx) =
+                                            &mut log_child_os_window.engine.graphics_context
+                                        {
+                                            ctx.make_context_current().unwrap();
+                                        }
                                         log_child_os_window.engine.render().unwrap();
+                                        if let GraphicsContext::Initialized(ctx) =
+                                            &mut log_child_os_window.engine.graphics_context
+                                        {
+                                            ctx.make_context_not_current().unwrap();
+                                        }
                                     }
                                 }
                             }
@@ -3335,6 +3356,9 @@ fn set_ui_scaling(ui: &UserInterface, scale: f32) {
 }
 
 fn update(editor: &mut Editor, event_loop: &ActiveEventLoop) {
+    if let GraphicsContext::Initialized(ctx) = &editor.engine.graphics_context {
+        ctx.make_context_current().unwrap();
+    }
     let elapsed = editor.game_loop_data.clock.elapsed().as_secs_f32();
     editor.game_loop_data.clock = Instant::now();
     editor.game_loop_data.lag += elapsed;
@@ -3471,5 +3495,9 @@ fn update(editor: &mut Editor, event_loop: &ActiveEventLoop) {
 
     if !editor.is_in_preview_mode() {
         editor.update_loop_state.decrease_counter();
+    }
+
+    if let GraphicsContext::Initialized(ctx) = &editor.engine.graphics_context {
+        ctx.make_context_not_current().unwrap();
     }
 }

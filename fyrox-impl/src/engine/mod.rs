@@ -2457,7 +2457,6 @@ impl Engine {
         }
 
         if let GraphicsContext::Initialized(ref mut ctx) = self.graphics_context {
-            ctx.make_context_current()?;
             let render_result = ctx.renderer.render_and_swap_buffers(
                 &self.scenes,
                 self.elapsed_time,
@@ -2478,10 +2477,7 @@ impl Engine {
                     }),
                 &ctx.window,
                 &self.resource_manager,
-            );
-            let make_not_current_result = ctx.make_context_not_current();
-            render_result?;
-            make_not_current_result?;
+            )?;
         }
         Ok(())
     }

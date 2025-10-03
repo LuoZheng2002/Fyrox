@@ -346,6 +346,7 @@ impl LogChildOsWindow {
         self.engine
             .initialize_graphics_context(event_loop)
             .expect("Unable to initialize graphics context!");
+        self.engine.graphics_context.as_initialized_ref().make_context_not_current().unwrap();
     }
 
     pub fn on_suspended(&mut self) {
