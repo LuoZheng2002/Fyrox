@@ -3010,7 +3010,6 @@ impl Editor {
 
         engine.initialize_graphics_context(event_loop).unwrap();
 
-
         let graphics_context = engine.graphics_context.as_initialized_mut();
 
         graphics_context.set_window_icon_from_memory(
@@ -3110,7 +3109,7 @@ impl Editor {
                 match event {
                     Event::AboutToWait => {
                         // update the main editor window
-                        std::thread::sleep(Duration::from_millis(100));
+                        // std::thread::sleep(Duration::from_millis(100));
                         if self.is_active() {
                             println!("About to wait update");
                             update(&mut self, window_target);
@@ -3170,6 +3169,7 @@ impl Editor {
                                     log_child_os_window_refmut
                                         .expect("It is Some because log_child_os_window is Some")
                                         .take();
+                                    return;
                                 }
                             }
                             WindowEvent::Resized(size) => {
@@ -3311,12 +3311,23 @@ impl Editor {
                         if !matches!(event, WindowEvent::RedrawRequested) {
                             self.update_loop_state.request_update_in_current_frame();
                         }
-
-                        if let Some(os_event) = translate_event(event) {
-                            self.engine
-                                .user_interfaces
-                                .first_mut()
-                                .process_os_event(&os_event);
+                        if main_window_id == Some(window_id) {
+                            if let Some(os_event) = translate_event(event) {
+                                self.engine
+                                    .user_interfaces
+                                    .first_mut()
+                                    .process_os_event(&os_event);
+                            }
+                        } else if log_window_id == Some(window_id) {
+                            if let Some(log_child_os_window) = log_child_os_window.as_mut() {
+                                if let Some(os_event) = translate_event(event) {
+                                    log_child_os_window
+                                        .engine
+                                        .user_interfaces
+                                        .first_mut()
+                                        .process_os_event(&os_event);
+                                }
+                            }
                         }
                     }
                     Event::LoopExiting => {

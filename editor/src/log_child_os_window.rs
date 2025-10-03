@@ -30,7 +30,7 @@ use fyrox::{
         message::{MessageDirection, UiMessage},
         scroll_viewer::ScrollViewerBuilder,
         stack_panel::StackPanelBuilder,
-        style::{resource::StyleResourceExt, Style},
+        style::{resource::StyleResourceExt, Style, StyledProperty},
         text::TextBuilder,
         utils::make_image_button_with_tooltip,
         widget::{WidgetBuilder, WidgetMessage},
@@ -72,8 +72,8 @@ impl LogChildOsWindow {
     pub fn new(log_message_receiver: Receiver<LogMessage>) -> Self {
         let mut window_attributes = WindowAttributes::default();
         window_attributes.resizable = true;
-        window_attributes.title = "Fyrox Game".to_string();
-        window_attributes.inner_size = Some(Size::Physical(PhysicalSize::new(1920, 1080)));
+        window_attributes.title = "Debug Log".to_string();
+        window_attributes.inner_size = Some(Size::Physical(PhysicalSize::new(600, 800)));
 
         let graphics_context_params = GraphicsContextParams {
             window_attributes,
@@ -171,7 +171,10 @@ impl LogChildOsWindow {
                     .with_horizontal_scroll_allowed(true)
                     .with_vertical_scroll_allowed(true)
                     .build(ctx),
-                ),
+                )
+                .with_width(600.0)
+                .with_height(800.0)
+                .with_background(ctx.style.property(Style::BRUSH_DIM_BLUE)),
         )
         .with_orientation(Orientation::Vertical)
         .build(ctx);
@@ -292,7 +295,7 @@ impl LogChildOsWindow {
         }
     }
 
-    /// Returns `false` if this window should close.
+    /// The update function
     pub fn update(&mut self, event_loop: &ActiveEventLoop) {
         if let GraphicsContext::Initialized(ctx) = &self.engine.graphics_context {
             ctx.make_context_current().unwrap();
@@ -300,18 +303,7 @@ impl LogChildOsWindow {
         let elapsed = self.game_loop_data.clock.elapsed().as_secs_f32();
         self.game_loop_data.clock = Instant::now();
         self.game_loop_data.lag += elapsed;
-        while self.game_loop_data.lag >= FIXED_TIMESTEP {
-            self.game_loop_data.lag -= FIXED_TIMESTEP;
-            // let pre_update_switch = GraphUpdateSwitches{
 
-            // }
-            self.engine.update(
-                FIXED_TIMESTEP,
-                ApplicationLoopController::ActiveEventLoop(&event_loop),
-                &mut self.game_loop_data.lag,
-                Default::default(),
-            );
-        }
         let mut received_anything = false;
         // receive messages from the log
         while let Ok(mut log_message) = self.log_message_receiver.try_recv() {
@@ -332,7 +324,21 @@ impl LogChildOsWindow {
         // handle ui messages
         let message_model_requires_update = self.poll_ui_messages();
         if received_anything || message_model_requires_update {
+            println!("Log message model updated");
             self.update_log_message_model();
+        }
+
+        while self.game_loop_data.lag >= FIXED_TIMESTEP {
+            self.game_loop_data.lag -= FIXED_TIMESTEP;
+            // let pre_update_switch = GraphUpdateSwitches{
+
+            // }
+            self.engine.update(
+                FIXED_TIMESTEP,
+                ApplicationLoopController::ActiveEventLoop(&event_loop),
+                &mut self.game_loop_data.lag,
+                Default::default(),
+            );
         }
 
         while let Ok(message) = self.message_receiver.try_recv() {
@@ -344,6 +350,7 @@ impl LogChildOsWindow {
             }
         }
         if let GraphicsContext::Initialized(ctx) = &self.engine.graphics_context {
+            ctx.window.request_redraw();
             ctx.make_context_not_current().unwrap();
         }
     }
@@ -376,6 +383,7 @@ impl LogChildOsWindow {
 
     /// Returns `true` if the message model requires update.
     pub fn handle_ui_message(&mut self, message: &UiMessage) -> bool {
+        println!("Received a ui message");
         fn handle_check_changed(
             message: &UiMessage,
             checkbox_message: &CheckBoxMessage,
@@ -387,6 +395,7 @@ impl LogChildOsWindow {
             {
                 if let CheckBoxMessage::Check(check) = checkbox_message {
                     *checked = check.map_or(false, |c| c);
+                    println!("Checkbox changed, now: {}", *checked);
                 }
             }
         }
