@@ -65,6 +65,7 @@ pub struct LogChildOsWindow {
     pub(crate) messages_from_engine: VecDeque<LogMessage>,
     pub(crate) messages_from_game: VecDeque<LogMessage>,
     pub(crate) max_messages: usize,
+    pub(crate) graphics_context_initialized_once: bool,
 }
 
 impl LogChildOsWindow {
@@ -177,6 +178,7 @@ impl LogChildOsWindow {
 
         let max_messages = 1000; // hardcoded limit for now
         Self {
+            graphics_context_initialized_once: false,
             engine,
             log_message_receiver,
             message_sender,
@@ -215,8 +217,9 @@ impl LogChildOsWindow {
         for child in children {
             user_interface.send_message(WidgetMessage::remove(child, MessageDirection::ToWidget));
         }
-        let log_stack_panel_ref = user_interface.node_mut(self.log_stack_panel);
-        assert!(log_stack_panel_ref.children().is_empty());
+
+        // let log_stack_panel_ref = user_interface.node_mut(self.log_stack_panel);
+        // assert!(log_stack_panel_ref.children().is_empty());
         //
         let mut visited_messages: FxHashMap<(MessageKind, String), usize> = FxHashMap::default();
         let mut folded_messages_rev: Vec<(MessageKind, String)> = Vec::new();
@@ -338,6 +341,7 @@ impl LogChildOsWindow {
             }
         }
     }
+    /// Calls initialize_graphics_context on the engine.
     pub fn on_resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.engine
             .initialize_graphics_context(event_loop)

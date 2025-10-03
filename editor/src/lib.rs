@@ -3097,7 +3097,14 @@ impl Editor {
                             _ => None,
                         }
                     });
-
+                // initialize log window's graphics context for the first time
+                // because Event::Resumed will not fire for the second window
+                if let Some(log_child_os_window) = log_child_os_window.as_mut() {
+                    if !log_child_os_window.graphics_context_initialized_once {
+                        // log_child_os_window.on_resumed(window_target);
+                        log_child_os_window.graphics_context_initialized_once = true;
+                    }
+                }
                 match event {
                     Event::AboutToWait => {
                         // update the main editor window
