@@ -88,6 +88,9 @@ define_as_any_trait!(GraphicsServerAsAny => GraphicsServer);
 /// Low-level GAPI-specific optimizations could be performed using direct access to the underlying API,
 /// by downcasting to a specific type.
 pub trait GraphicsServer: GraphicsServerAsAny {
+    /// This is to be compatible with OpenGL. If there is no need for switching contexts manually, just implement this method as blank.
+    fn make_context_current(&self) -> Result<(), FrameworkError>;
+
     /// Creates a GPU buffer with the given size and kind. Usage is a hint to the video driver
     /// that allows to perform some potential performance optimizations.
     fn create_buffer(&self, desc: GpuBufferDescriptor) -> Result<GpuBuffer, FrameworkError>;

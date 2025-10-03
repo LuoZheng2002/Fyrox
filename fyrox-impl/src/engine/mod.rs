@@ -201,6 +201,12 @@ pub struct InitializedGraphicsContext {
 }
 
 impl InitializedGraphicsContext {
+    /// If the render server is OpenGL, makes its context current before rendering in a multi-context scenario.
+    ///
+    /// If the render server is not OpenGL, this method does nothing and returns `Ok(())`.
+    pub fn make_context_current(&self) -> Result<(), FrameworkError> {
+        self.renderer.server.make_context_current()
+    }
     /// Tries to set a new icon for the window from the given data source. The data source must contain
     /// some of the supported texture types data (png, bmp, jpg images). You can call this method
     /// with [`include_bytes`] macro to pass file's data directly.
@@ -2446,6 +2452,7 @@ impl Engine {
         }
 
         if let GraphicsContext::Initialized(ref mut ctx) = self.graphics_context {
+            ctx.make_context_current()?;
             ctx.renderer.render_and_swap_buffers(
                 &self.scenes,
                 self.elapsed_time,

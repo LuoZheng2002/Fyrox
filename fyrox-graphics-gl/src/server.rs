@@ -49,6 +49,7 @@ use fyrox_graphics::{
     StencilOp,
 };
 use glow::HasContext;
+use glutin::prelude::PossiblyCurrentGlContext;
 #[cfg(not(target_arch = "wasm32"))]
 use glutin::{
     config::ConfigTemplateBuilder,
@@ -333,6 +334,13 @@ impl InnerState {
             #[cfg(not(target_arch = "wasm32"))]
             gl_surface,
         }
+    }
+
+    fn make_context_current(&self) -> Result<(), FrameworkError> {
+        self.gl_context
+            .make_current(&self.gl_surface)
+            .map_err(|err| FrameworkError::Custom(format!("{err:?}")))?;
+        Ok(())
     }
 
     pub(crate) fn delete_framebuffer(
@@ -1313,6 +1321,9 @@ impl GlGraphicsServer {
 }
 
 impl GraphicsServer for GlGraphicsServer {
+    fn make_context_current(&self) -> Result<(), FrameworkError> {
+        self.state.borrow().make_context_current()
+    }
     fn create_buffer(&self, desc: GpuBufferDescriptor) -> Result<GpuBuffer, FrameworkError> {
         Ok(GpuBuffer(Rc::new(GlBuffer::new(self, desc)?)))
     }
