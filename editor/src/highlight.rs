@@ -55,6 +55,7 @@ impl HighlightRenderPass {
         mut width: usize,
         mut height: usize,
     ) -> GpuFrameBuffer {
+
         width = width.max(1);
         height = height.max(1);
 
@@ -75,7 +76,8 @@ impl HighlightRenderPass {
     }
 
     pub fn new_raw(server: &dyn GraphicsServer, width: usize, height: usize) -> Self {
-        Self {
+        server.make_context_current().unwrap();
+        let result = Self {
             framebuffer: Self::create_frame_buffer(server, width, height),
             edge_detect_shader: RenderPassContainer::from_str(
                 server,
@@ -84,7 +86,9 @@ impl HighlightRenderPass {
             .unwrap(),
             scene_handle: Default::default(),
             nodes_to_highlight: Default::default(),
-        }
+        };
+        server.make_context_not_current().unwrap();
+        result
     }
 
     pub fn new(server: &dyn GraphicsServer, width: usize, height: usize) -> Rc<RefCell<Self>> {

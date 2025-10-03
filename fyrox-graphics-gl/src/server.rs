@@ -287,7 +287,7 @@ pub(crate) struct InnerState {
     pub(crate) queries: Vec<glow::Query>,
 
     #[cfg(not(target_arch = "wasm32"))]
-    gl_context: PossiblyCurrentContext,
+    gl_context: Option<PossiblyCurrentContext>, // This is Option because it needs to be moved out during drop.
     #[cfg(not(target_arch = "wasm32"))]
     gl_surface: Surface<WindowSurface>,
 }
@@ -330,7 +330,7 @@ impl InnerState {
             gl_kind,
             queries: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
-            gl_context,
+            gl_context: Some(gl_context),
             #[cfg(not(target_arch = "wasm32"))]
             gl_surface,
         }
@@ -338,7 +338,18 @@ impl InnerState {
 
     fn make_context_current(&self) -> Result<(), FrameworkError> {
         self.gl_context
+            .as_ref()
+            .unwrap()
             .make_current(&self.gl_surface)
+            .map_err(|err| FrameworkError::Custom(format!("{err:?}")))?;
+        Ok(())
+    }
+
+    fn make_context_not_current(&self) -> Result<(), FrameworkError> {
+        self.gl_context
+            .as_ref()
+            .unwrap()
+            .make_not_current_in_place()
             .map_err(|err| FrameworkError::Custom(format!("{err:?}")))?;
         Ok(())
     }
@@ -508,6 +519,13 @@ impl InnerState {
                 gl.bind_vertex_array(self.vao);
             }
         }
+    }
+}
+
+impl Drop for InnerState {
+    fn drop(&mut self) {
+        println!("Dropping GL context");
+        self.gl_context.take().unwrap().make_not_current().unwrap();
     }
 }
 
@@ -1324,6 +1342,9 @@ impl GraphicsServer for GlGraphicsServer {
     fn make_context_current(&self) -> Result<(), FrameworkError> {
         self.state.borrow().make_context_current()
     }
+    fn make_context_not_current(&self) -> Result<(), FrameworkError> {
+        self.state.borrow().make_context_not_current()
+    }
     fn create_buffer(&self, desc: GpuBufferDescriptor) -> Result<GpuBuffer, FrameworkError> {
         Ok(GpuBuffer(Rc::new(GlBuffer::new(self, desc)?)))
     }
@@ -1464,7 +1485,7 @@ impl GraphicsServer for GlGraphicsServer {
             let state = self.state.borrow();
             state
                 .gl_surface
-                .swap_buffers(&state.gl_context)
+                .swap_buffers(state.gl_context.as_ref().unwrap())
                 .map_err(|err| FrameworkError::Custom(format!("{err:?}")))
         }
 
@@ -1480,7 +1501,7 @@ impl GraphicsServer for GlGraphicsServer {
             use std::num::NonZeroU32;
             let state = self.state.borrow();
             state.gl_surface.resize(
-                &state.gl_context,
+                state.gl_context.as_ref().unwrap(),
                 NonZeroU32::new(new_size.0).unwrap_or_else(|| NonZeroU32::new(1).unwrap()),
                 NonZeroU32::new(new_size.1).unwrap_or_else(|| NonZeroU32::new(1).unwrap()),
             );

@@ -2475,7 +2475,7 @@ impl Editor {
                             self.mode = Mode::Edit;
                             self.on_mode_changed();
 
-                            Log::warn(format!("Game was closed: {status:?}"))
+                            Log::warn(format!("Game was closed: {status:?}"));
                         }
                     }
                     Err(err) => Log::err(format!("Failed to wait for game process: {err:?}")),
@@ -2579,8 +2579,6 @@ impl Editor {
     }
 
     fn update(&mut self, dt: f32) {
-        println!("Updating");
-        std::thread::sleep(Duration::from_millis(100));
         for_each_plugin!(self.plugins => on_update(self));
 
         self.handle_modes(dt);
@@ -3091,14 +3089,14 @@ impl Editor {
                     log_child_os_window_refmut.as_mut().and_then(|w| w.as_mut());
 
                 // optionally grab the window id of the log window
-                // let log_window_id: Option<WindowId> = log_child_os_window
-                //     .as_ref() // this is necessary because otherwise the Option will be consumed
-                //     .and_then(|log_child_os_window| {
-                //         match &log_child_os_window.engine.graphics_context {
-                //             GraphicsContext::Initialized(context) => Some(context.window.id()),
-                //             _ => None,
-                //         }
-                //     });
+                let log_window_id: Option<WindowId> = log_child_os_window
+                    .as_ref() // this is necessary because otherwise the Option will be consumed
+                    .and_then(|log_child_os_window| {
+                        match &log_child_os_window.engine.graphics_context {
+                            GraphicsContext::Initialized(context) => Some(context.window.id()),
+                            _ => None,
+                        }
+                    });
                 // initialize log window's graphics context for the first time
                 // because Event::Resumed will not fire for the second window
                 if let Some(log_child_os_window) = log_child_os_window.as_mut() {
@@ -3110,8 +3108,12 @@ impl Editor {
                 match event {
                     Event::AboutToWait => {
                         // update the main editor window
+                        std::thread::sleep(Duration::from_millis(100));
                         if self.is_active() {
+                            println!("About to wait update");
                             update(&mut self, window_target);
+                        } else {
+                            println!("About to wait skipped");
                         }
                         // update the log window if it exists
                         if let Some(log_child_os_window) = log_child_os_window.as_mut() {
@@ -3161,13 +3163,12 @@ impl Editor {
                             WindowEvent::CloseRequested => {
                                 if main_window_id == Some(window_id) {
                                     self.message_sender.send(Message::Exit { force: false });
+                                } else if log_window_id == Some(window_id) {
+                                    // this will drop the log window from Mode::Play struct. It will automatically close the window.
+                                    log_child_os_window_refmut
+                                        .expect("It is Some because log_child_os_window is Some")
+                                        .take();
                                 }
-                                // else if log_window_id == Some(window_id) {
-                                //     // this will drop the log window from Mode::Play struct. It will automatically close the window.
-                                //     log_child_os_window_refmut
-                                //         .expect("It is Some because log_child_os_window is Some")
-                                //         .take();
-                                // }
                             }
                             WindowEvent::Resized(size) => {
                                 // we have two windows to handle resize, so we extract the common logic to a function
@@ -3218,20 +3219,21 @@ impl Editor {
                                         Some(&mut self.settings),
                                     );
                                 }
-                                // if log_window_id == Some(window_id) {
-                                //     if let Some(log_child_os_window) = log_child_os_window.as_mut()
-                                //     {
-                                //         resize_for_engine(
-                                //             &mut log_child_os_window.engine,
-                                //             size,
-                                //             log_child_os_window.root_grid,
-                                //             None,
-                                //         );
-                                //     }
-                                // }
+                                if log_window_id == Some(window_id) {
+                                    if let Some(log_child_os_window) = log_child_os_window.as_mut()
+                                    {
+                                        resize_for_engine(
+                                            &mut log_child_os_window.engine,
+                                            size,
+                                            log_child_os_window.root_grid,
+                                            None,
+                                        );
+                                    }
+                                }
                             }
                             WindowEvent::Focused(focused) => {
                                 if main_window_id == Some(window_id) {
+                                    println!("Main window focus changed: {focused}");
                                     self.focused = *focused;
                                 }
                             }
@@ -3272,12 +3274,12 @@ impl Editor {
                                     }
                                 }
                                 // render log window if it is ready
-                                // if log_window_id == Some(window_id) {
-                                //     if let Some(log_child_os_window) = log_child_os_window.as_mut()
-                                //     {
-                                //         log_child_os_window.engine.render().unwrap();
-                                //     }
-                                // }
+                                if log_window_id == Some(window_id) {
+                                    if let Some(log_child_os_window) = log_child_os_window.as_mut()
+                                    {
+                                        log_child_os_window.engine.render().unwrap();
+                                    }
+                                }
                             }
                             _ => (),
                         }
